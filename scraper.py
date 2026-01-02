@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 import time
 
-# 1. Configuration - Set these in GitHub Secrets
+# 1. Configuration - Fetched from GitHub Secrets
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("DATABASE_ID")
 
@@ -15,40 +15,36 @@ headers = {
 
 def get_psx_price(ticker):
     """
-    Fetches the current stock price from PSX Data Portal API.
+    Fetches the current stock price directly from PSX Data Portal API.
     """
     try:
-        # The PSX Data Portal uses this endpoint for company info
+        # Official PSX Data Portal endpoint for company information
         url = f"https://dps.psx.com.pk/ajax/getCompanyInfo/{ticker.upper()}"
         
-        # We use a standard User-Agent to ensure the request is accepted
+        # We use a standard User-Agent to prevent the server from blocking the request
         response = requests.get(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "X-Requested-With": "XMLHttpRequest"
         }, timeout=15)
         
-        # Check if the page exists or if we are blocked
-        if response.status_code != 200:
-            print(f"Error: Received status {response.status_code} for {ticker}")
-            return None
-        
+        response.raise_for_status()
         data = response.json()
         
-        # The price is stored in the 'current' key of the JSON response
+        # 'current' is the field for the latest price in the PSX API response
         price = data.get("current")
         
-        if price:
+        if price is not None:
             return float(price)
         else:
-            print(f"Price data missing in PSX response for {ticker}")
+            print(f"Price not found in PSX data for {ticker}")
             return None
             
     except Exception as e:
-        print(f"Connection error for {ticker}: {e}")
+        print(f"Error fetching {ticker} from PSX: {e}")
         return None
 
 def update_notion(page_id, price):
-    """Updates the Notion page with the latest price and current timestamp."""
+    """Updates the Notion page with the new price and current timestamp."""
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {
         "properties": {
@@ -57,47 +53,50 @@ def update_notion(page_id, price):
         }
     }
     res = requests.patch(url, headers=headers, json=data)
-    return res.status_code
+    return res.status_code == 200
 
 def main():
     if not NOTION_TOKEN or not DATABASE_ID:
-        print("Error: Notion credentials not found in environment.")
+        print("Missing Credentials! Please check your GitHub Secrets.")
         return
 
-    # Fetch rows from Notion
+    # Step 1: Query Notion Database
     query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
     res = requests.post(query_url, headers=headers)
     
     if res.status_code != 200:
-        print(f"Failed to reach Notion: {res.text}")
+        print(f"Notion Connection Error: {res.text}")
         return
 
-    results = res.json().get("results", [])
-    print(f"Found {len(results)} stocks in Notion database. Starting update...")
+    rows = res.json().get("results", [])
+    if not rows:
+        print("No stocks found in your Notion database. Check your filters or Ticker column.")
+        return
 
-    for page in results:
-        page_id = page["id"]
+    print(f"Found {len(rows)} stocks. Starting update...")
+
+    for row in rows:
+        page_id = row["id"]
         
-        # Extract Ticker from the database
+        # Get Ticker from the database column
         try:
-            ticker_data = page["properties"]["Ticker"]["rich_text"]
-            if not ticker_data:
+            ticker_list = row["properties"]["Ticker"]["rich_text"]
+            if not ticker_list:
                 continue
-            ticker = ticker_data[0]["text"]["content"].upper().strip()
+            ticker = ticker_list[0]["text"]["content"].upper().strip()
         except (KeyError, IndexError):
             continue
             
-        print(f"Fetching {ticker} from PSX...")
+        print(f"Updating {ticker}...")
         price = get_psx_price(ticker)
         
-        if price:
-            status = update_notion(page_id, price)
-            if status == 200:
-                print(f"SUCCESS: {ticker} updated to {price}")
+        if price is not None:
+            if update_notion(page_id, price):
+                print(f"SUCCESS: {ticker} -> {price} PKR")
             else:
-                print(f"FAILED: Notion update error {status}")
+                print(f"FAILED to update Notion for {ticker}")
         
-        # Pause to avoid triggering security blocks
+        # 2-second delay to avoid triggering rate limits or security blocks
         time.sleep(2)
 
 if __name__ == "__main__":
