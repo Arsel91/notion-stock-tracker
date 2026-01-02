@@ -1,0 +1,30 @@
+name: Update Stock Prices
+
+# This section tells GitHub WHEN to run
+on:
+  schedule:
+    - cron: '0 5 * * 1-5' # 5:00 AM UTC (10:00 AM PKT) Monday to Friday
+  workflow_dispatch:      # This adds a "Run" button for manual testing
+
+# This section tells GitHub WHAT to do
+jobs:
+  run_scraper:
+    runs-on: ubuntu-latest # Opens a virtual Linux computer
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # Copies your code to the virtual computer
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt # Installs requests and bs4
+
+      - name: Run Python Script
+        env:
+          # Connects your hidden GitHub Secrets to the Python code
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DATABASE_ID: ${{ secrets.DATABASE_ID }}
+        run: python scraper.py
