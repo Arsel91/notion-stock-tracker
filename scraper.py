@@ -1,5 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
 from datetime import datetime
 import os
 import time
@@ -8,55 +7,45 @@ import time
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("DATABASE_ID")
 
-# Notion API Headers
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
     "Content-Type": "application/json",
     "Notion-Version": "2022-06-28"
 }
 
-def get_stock_price(ticker):
+def get_psx_price(ticker):
     """
-    Scrapes the current stock price from Sarmaaya.pk
+    Fetches the current stock price directly from PSX Data Portal API.
     """
     try:
-        url = f"https://sarmaaya.pk/psx/company/{ticker}"
-        # User-Agent header prevents the website from blocking the script
+        # PSX uses this specific endpoint for company data
+        url = f"https://dps.psx.com.pk/ajax/getCompanyInfo/{ticker.upper()}"
+        
         response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         response.raise_for_status()
         
-        soup = BeautifulSoup(response.text, 'html.parser')
+        data = response.json()
         
-        # Sarmaaya stores the price in a span with ID 'quote_price'
-        price_tag = soup.find("span", id="quote_price")
+        # 'current' is the field for the latest price in the PSX API response
+        price = data.get("current")
         
-        if price_tag:
-            # Clean string like "1,250.50" to float 1250.5
-            price_str = price_tag.text.replace(",", "").strip()
-            return float(price_str)
+        if price:
+            return float(price)
         else:
-            print(f"Could not find price tag for {ticker}")
+            print(f"Price not found in PSX data for {ticker}")
             return None
             
     except Exception as e:
-        print(f"Error scraping {ticker}: {e}")
+        print(f"Error fetching {ticker} from PSX: {e}")
         return None
 
 def update_notion(page_id, price):
-    """
-    Updates the Price and Last Updated columns in Notion
-    """
+    """Updates the Notion page with the new price and date"""
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {
         "properties": {
-            "Price": {
-                "number": price
-            },
-            "Last Updated": {
-                "date": {
-                    "start": datetime.now().isoformat()
-                }
-            }
+            "Price": {"number": price},
+            "Last Updated": {"date": {"start": datetime.now().isoformat()}}
         }
     }
     res = requests.patch(url, headers=headers, json=data)
@@ -64,49 +53,40 @@ def update_notion(page_id, price):
 
 def main():
     if not NOTION_TOKEN or not DATABASE_ID:
-        print("Error: NOTION_TOKEN or DATABASE_ID not found in environment variables.")
+        print("Missing Credentials!")
         return
 
-    # Step 1: Query the database to get all rows
+    # Step 1: Query Notion Database
     query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-    response = requests.post(query_url, headers=headers)
+    res = requests.post(query_url, headers=headers)
     
-    if response.status_code != 200:
-        print(f"Failed to connect to Notion. Error: {response.text}")
+    if res.status_code != 200:
+        print(f"Notion Connection Error: {res.text}")
         return
 
-    data = response.json()
-    pages = data.get("results", [])
+    rows = res.json().get("results", [])
+    print(f"Updating {len(rows)} stocks...")
 
-    if not pages:
-        print("No rows found in the database. Make sure you have added stocks and filled the 'Ticker' column.")
-        return
-
-    print(f"Found {len(pages)} stocks. Starting update...")
-
-    for page in pages:
-        page_id = page["id"]
-        props = page["properties"]
+    for row in rows:
+        page_id = row["id"]
         
-        # Extract Ticker from the "Ticker" column
-        ticker_data = props.get("Ticker", {}).get("rich_text", [])
-        if not ticker_data:
+        # Get Ticker from column
+        try:
+            ticker = row["properties"]["Ticker"]["rich_text"][0]["text"]["content"]
+            ticker = ticker.upper().strip()
+        except (KeyError, IndexError):
             continue
             
-        ticker = ticker_data[0]["text"]["content"].upper().strip()
+        print(f"Fetching {ticker}...")
+        price = get_psx_price(ticker)
         
-        # Step 2: Get the price
-        current_price = get_stock_price(ticker)
-        
-        if current_price is not None:
-            # Step 3: Update Notion
-            success = update_notion(page_id, current_price)
-            if success:
-                print(f"Successfully updated {ticker}: {current_price} PKR")
+        if price:
+            if update_notion(page_id, price):
+                print(f"SUCCESS: {ticker} -> {price}")
             else:
-                print(f"Failed to update Notion for {ticker}")
+                print(f"FAILED to update Notion for {ticker}")
         
-        # Small delay to avoid hitting Sarmaaya or Notion rate limits
+        # 1-second delay to be polite to servers
         time.sleep(1)
 
 if __name__ == "__main__":
