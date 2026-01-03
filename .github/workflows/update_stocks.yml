@@ -1,21 +1,28 @@
 name: Update Stock Prices
 on:
   schedule:
-    - cron: '0 11 * * 1-5' # Runs at 11:00 UTC (4 PM PKT) Mon-Fri
-  workflow_dispatch: # Allows manual trigger
+    # This syntax is the most reliable for 15-minute intervals
+    - cron: '*/15 * * * *'
+  # Keeps the manual button just in case
+  workflow_dispatch: 
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # This prevents the job from failing if the PSX site is temporarily down
+    continue-on-error: true 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # Updated to v4 for better performance
+        
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
+          
       - name: Install dependencies
         run: pip install requests beautifulsoup4
+        
       - name: Run Scraper
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
